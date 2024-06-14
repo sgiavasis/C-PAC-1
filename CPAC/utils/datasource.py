@@ -533,7 +533,7 @@ def ingress_func_metadata(
     blip = False
     fmap_rp_list = []
     fmap_TE_list = []
-    if "fmap" in sub_dict:
+    if "fmap" in sub_dict[1]["ent__datatype"].values:
         second = False
         for orig_key in sub_dict["fmap"]:
             gather_fmap = create_fmap_datasource(

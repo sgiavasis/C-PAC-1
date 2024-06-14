@@ -874,6 +874,41 @@ class ResourcePool:
 
         return wf
 
+    
+
+    def build_rpool(self, data_paths):
+        import pandas as pd
+        for x in data_paths[1].iterrows():
+            run = x[1]['ent__run']
+            task = x[1]['ent__task']
+            suffix = x[1]['ent__suffix']
+            data_type = x[1]['ent__datatype']
+            data_path = x[1]['finfo__file_path']
+            desc = x[1]['ent__desc']
+            extra_entities = x[1]['ent__extra_entities']
+            metadata = 'metadata_here'
+
+            desc_suffix = f"desc-{desc}_{suffix}" if pd.notnull(desc) and pd.notnull(suffix) else None
+
+            # Set key to suffix
+            key = suffix
+
+            # Create dictionary with 'key' as keys and initialize with default values
+            self.rpool.setdefault(key, [])
+
+            # Define data_description based on data_type
+            data_description = {"data_type": data_type, "task": task, "run": run} if data_type == 'func' else {"data_type": data_type}
+
+            # Append a dictionary containing data_path, json_data, extra_entities, meta_data, data_description and desc_suffix (if it exists)
+            self.rpool[key].append({
+                "data": data_path,
+                #"json": extra_entities,
+                #"data_description": data_description,
+                "metadata": metadata,
+                #"desc_suffix": desc_suffix if desc_suffix else None
+                "strat": "ingress"
+            })
+    
     @property
     def filtered_movement(self) -> bool:
         """
@@ -1412,6 +1447,12 @@ class ResourcePool:
         """
         return NodeData(self, resource, **kwargs)
 
+class StratPool(ResourcePool):
+    pass
+
+class Resource(StratPool):
+    pass
+
 
 class NodeBlock:
     def __init__(self, node_block_functions, debug=False):
@@ -1904,41 +1945,45 @@ def wrap_block(node_blocks, interface, wf, cfg, strat_pool, pipe_num, opt):
 
 
 def ingress_raw_anat_data(wf, rpool, cfg, data_paths, unique_id, part_id, ses_id):
-    if "anat" not in data_paths:
+    if "anat" not in data_paths[1]["ent__datatype"].values:
         WFLOGGER.warning("No anatomical data present.")
         return rpool
 
-    if "creds_path" not in data_paths:
-        data_paths["creds_path"] = None
+    # if "creds_path" not in data_paths:
+    #     data_paths["creds_path"] = None
 
     anat_flow = create_anat_datasource(f"anat_T1w_gather_{part_id}_{ses_id}")
 
     anat = {}
-    if isinstance(data_paths["anat"], str):
-        anat["T1"] = data_paths["anat"]
-    elif "T1w" in data_paths["anat"]:
-        anat["T1"] = data_paths["anat"]["T1w"]
+    anat_data = data_paths[1].loc[data_paths[1]["ent__datatype"] == "anat"]
+    if "T1w" in anat_data["ent__suffix"].values:
+        anat["T1"] = anat_data["finfo__file_path"].values[0]
+
+    # if isinstance(data_paths["anat"], str):
+    #     anat["T1"] = data_paths["anat"]
+    # elif "T1w" in data_paths["anat"]:
+    #     anat["T1"] = data_paths["anat"]["T1w"]
 
     if "T1" in anat:
         anat_flow.inputs.inputnode.set(
             subject=part_id,
             anat=anat["T1"],
-            creds_path=data_paths["creds_path"],
+            creds_path=None,
             dl_dir=cfg.pipeline_setup["working_directory"]["path"],
             img_type="anat",
         )
         rpool.set_data("T1w", anat_flow, "outputspec.anat", {}, "", "anat_ingress")
 
-    if "T2w" in data_paths["anat"]:
-        anat_flow_T2 = create_anat_datasource(f"anat_T2w_gather_{part_id}_{ses_id}")
-        anat_flow_T2.inputs.inputnode.set(
-            subject=part_id,
-            anat=data_paths["anat"]["T2w"],
-            creds_path=data_paths["creds_path"],
-            dl_dir=cfg.pipeline_setup["working_directory"]["path"],
-            img_type="anat",
-        )
-        rpool.set_data("T2w", anat_flow_T2, "outputspec.anat", {}, "", "anat_ingress")
+    # if "T2w" in data_paths["anat"]:
+    #     anat_flow_T2 = create_anat_datasource(f"anat_T2w_gather_{part_id}_{ses_id}")
+    #     anat_flow_T2.inputs.inputnode.set(
+    #         subject=part_id,
+    #         anat=data_paths["anat"]["T2w"],
+    #         creds_path=data_paths["creds_path"],
+    #         dl_dir=cfg.pipeline_setup["working_directory"]["path"],
+    #         img_type="anat",
+    #     )
+    #     rpool.set_data("T2w", anat_flow_T2, "outputspec.anat", {}, "", "anat_ingress")
 
     if cfg.surface_analysis["freesurfer"]["ingress_reconall"]:
         rpool = ingress_freesurfer(
@@ -2041,14 +2086,14 @@ def ingress_freesurfer(wf, rpool, cfg, data_paths, unique_id, part_id, ses_id):
 
 
 def ingress_raw_func_data(wf, rpool, cfg, data_paths, unique_id, part_id, ses_id):
-    func_paths_dct = data_paths["func"]
+    func_paths_dct = data_paths[1].loc[data_paths[1]["ent__datatype"] == "func"]
 
     func_wf = create_func_datasource(
         func_paths_dct, rpool, f"func_ingress_{part_id}_{ses_id}"
     )
     func_wf.inputs.inputnode.set(
         subject=part_id,
-        creds_path=data_paths["creds_path"],
+        creds_path=None,
         dl_dir=cfg.pipeline_setup["working_directory"]["path"],
     )
     func_wf.get_node("inputnode").iterables = ("scan", list(func_paths_dct.keys()))
@@ -2061,20 +2106,28 @@ def ingress_raw_func_data(wf, rpool, cfg, data_paths, unique_id, part_id, ses_id
     )
 
     # TODO: CHECK FOR PARAMETERS
-
-    wf, rpool, diff, blip, fmap_rp_list = ingress_func_metadata(
-        wf, cfg, rpool, data_paths, part_id, data_paths["creds_path"], ses_id
-    )
+    diff = None
+    blip = None
+    fmap_rp_list = None
+    # wf, rpool, diff, blip, fmap_rp_list = ingress_func_metadata(
+    #     wf, cfg, rpool, data_paths, part_id, None, ses_id
+    # )
 
     # Memoize list of local functional scans
     # TODO: handle S3 files
     # Skip S3 files for now
 
-    local_func_scans = [
-        func_paths_dct[scan]["scan"]
-        for scan in func_paths_dct.keys()
-        if not func_paths_dct[scan]["scan"].startswith("s3://")
-    ]
+    local_func_scans = (
+        [file_path for file_path in func_paths_dct["finfo__file_path"].values]
+        if not func_paths_dct.empty
+        else []
+    )
+
+    # local_func_scans = [
+    #     func_paths_dct[scan]["scan"]
+    #     for scan in func_paths_dct.keys()
+    #  #   if not func_paths_dct[scan]["scan"].startswith("s3://")
+    # ]
     if local_func_scans:
         # pylint: disable=protected-access
         wf._local_func_scans = local_func_scans
@@ -2600,6 +2653,36 @@ def ingress_pipeconfig_paths(cfg, rpool, unique_id, creds_path=None):
 
     return rpool
 
+def ingress_all_data(wf, rpool, cfg, data_paths, unique_id, part_id, ses_id):
+
+
+
+
+ #### One way to do it
+
+    # for data in data_paths[1].iterrows():
+    #     suffix = data[1]["ent__suffix"]
+    #     datatype = data[1]["ent__datatype"]
+    #     filepath = data[1]["finfo__file_path"]
+    #     desc = data[1]["ent__desc"]
+
+    #     data_flow = create_general_datasource(f"gather_{datatype}_{suffix}")
+    #     data_flow.inputs.inputnode.set(
+    #         unique_id=unique_id,
+    #         data=filepath,
+    #         creds_path=None,
+    #         dl_dir=cfg.pipeline_setup["working_directory"]["path"],
+    #     )
+    #     rpool.set_data(
+    #         f"{datatype}_{suffix}",
+    #         data_flow,
+    #         "outputspec.data",
+    #         {},
+    #         "",
+    #         f"{datatype}_{suffix}_ingress",
+    #     )
+
+    return rpool
 
 def initiate_rpool(wf, cfg, data_paths=None, part_id=None):
     """
@@ -2628,12 +2711,8 @@ def initiate_rpool(wf, cfg, data_paths=None, part_id=None):
     # TODO: the raw data config to use 'T1w' label instead of 'anat' etc.
 
     if data_paths:
-        part_id = data_paths["subject_id"]
-        ses_id = data_paths["unique_id"]
-        if "creds_path" not in data_paths:
-            creds_path = None
-        else:
-            creds_path = data_paths["creds_path"]
+        part_id = data_paths[0][0]
+        ses_id = data_paths[0][1]
         unique_id = f"{part_id}_{ses_id}"
 
     elif part_id:
@@ -2642,36 +2721,21 @@ def initiate_rpool(wf, cfg, data_paths=None, part_id=None):
 
     rpool = ResourcePool(name=unique_id, cfg=cfg)
 
-    if data_paths:
-        # ingress outdir
-        try:
-            if (
-                data_paths["derivatives_dir"]
-                and cfg.pipeline_setup["outdir_ingress"]["run"]
-            ):
-                wf, rpool = ingress_output_dir(
-                    wf,
-                    cfg,
-                    rpool,
-                    unique_id,
-                    data_paths,
-                    part_id,
-                    ses_id,
-                    creds_path=None,
-                )
-        except:
-            rpool = ingress_raw_anat_data(
-                wf, rpool, cfg, data_paths, unique_id, part_id, ses_id
-            )
-            if "func" in data_paths:
-                wf, rpool, diff, blip, fmap_rp_list = ingress_raw_func_data(
-                    wf, rpool, cfg, data_paths, unique_id, part_id, ses_id
-                )
+    # if data_paths:
+    #     rpool = ingress_all_data(
+    #         wf, rpool, cfg, data_paths, unique_id, part_id, ses_id
+    #     )
+    rpool.build_rpool(data_paths)
 
     # grab any file paths from the pipeline config YAML
-    rpool = ingress_pipeconfig_paths(cfg, rpool, unique_id, creds_path)
+    # creds_path = None
+    # rpool = ingress_pipeconfig_paths(cfg, rpool, unique_id, creds_path)
 
     # output files with 4 different scans
+    print(rpool.get_entire_rpool())
+    import sys
+    sys.exit()
+
 
     return (wf, rpool)
 
