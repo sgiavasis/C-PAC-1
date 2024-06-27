@@ -51,6 +51,8 @@ from CPAC.utils.docs import DOCS_URL_PREFIX
 from CPAC.utils.monitoring import failed_to_start, FMLOGGER, log_nodes_cb, WFLOGGER
 from CPAC.utils.utils import update_nested_dict
 
+from bids2table import bids2table
+
 simplefilter(action="ignore", category=FutureWarning)
 DEFAULT_TMP_DIR = "/tmp"
 
@@ -779,10 +781,21 @@ def run_main():
                 args.skip_bids_validator,
                 only_one_anat=False,
             )
-        else:
-            sub_list = load_cpac_data_config(
-                args.data_config_file, args.participant_label, args.aws_input_creds
-            )
+            # Initializing the bidstable on the bids_directory
+            bids_table = bids2table(bids_dir, workers=10)
+
+            try:
+                # fillna
+                bids_table['ent__ses'] = bids_table['ent__ses'].fillna('None')
+                grouped_tab = bids_table.groupby(["ent__sub", "ent__ses"])
+            except Exception as e:
+                WFLOGGER.warning("Could not create bids table: %s", e)
+                print("Could not create bids table: %s", e)
+                sys.exit(1)
+        # else:
+        #     sub_list = load_cpac_data_config(
+        #         args.data_config_file, args.participant_label, args.aws_input_creds
+        #     )
         list(sub_list)
         sub_list = sub_list_filter_by_labels(
             sub_list, {"T1w": args.T1w_label, "bold": args.bold_label}
@@ -824,7 +837,7 @@ def run_main():
             data_hash = hash_data_config(sub_list)
             data_config_file = f"cpac_data_config_{data_hash}_{st}.yml"
 
-        sublogdirs = [set_subject(sub, c)[2] for sub in sub_list]
+        sublogdirs = [set_subject(sub, c)[2] for sub in grouped_tab]
         # write out the data configuration file
         data_config_file = os.path.join(sublogdirs[0], data_config_file)
         with open(data_config_file, "w", encoding="utf-8") as _f:
@@ -919,7 +932,7 @@ def run_main():
 
             WFLOGGER.info("Starting participant level processing")
             exitcode = CPAC.pipeline.cpac_runner.run(
-                data_config_file,
+                grouped_tab,
                 pipeline_config_file,
                 plugin="MultiProc" if plugin_args["n_procs"] > 1 else "Linear",
                 plugin_args=plugin_args,
